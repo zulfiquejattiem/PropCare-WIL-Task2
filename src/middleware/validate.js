@@ -154,6 +154,22 @@ const registerUserValidation = [
     .trim()
     .isIn(ROLE_IDS)
     .withMessage(`Role must be one of: ${ROLE_IDS.join(', ')}`),
+  // Optional extras that make a newly created account immediately usable.
+  body('skill')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isLength({ max: 60 })
+    .withMessage('Skill must not exceed 60 characters'),
+  body('propertyId')
+    .optional({ values: 'falsy' })
+    .trim()
+    .matches(/^P\d+$/)
+    .withMessage('Invalid property id'),
+  body('unit')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isLength({ max: 120 })
+    .withMessage('Unit must not exceed 120 characters'),
   handleValidationErrors,
 ];
 
