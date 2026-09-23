@@ -20,6 +20,7 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   background: var(--bg);
@@ -304,6 +305,15 @@ tr.clickable:hover td { background: #f7f9fc; }
 .role-technician { background: #e0c9a6; }
 .role-admin { background: #d3c3ef; }
 
+/* ---------- Responsive: tablet (portrait iPad and small laptops) ---------- */
+@media (max-width: 1200px) {
+  .stat-grid { grid-template-columns: repeat(2, 1fr); }
+  .three-col { grid-template-columns: repeat(2, 1fr); }
+  .app-body { padding: 18px 22px 40px; }
+  .breadcrumb { padding: 14px 22px 0; }
+  .mockup-grid { gap: 14px; }
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 920px) {
   .login-screen { grid-template-columns: 1fr; }
@@ -327,6 +337,29 @@ tr.clickable:hover td { background: #f7f9fc; }
   .bottom-nav a .bn-ico { display: block; font-size: 19px; }
   .bottom-nav a.active { color: var(--teal); }
   .urg-options { grid-template-columns: repeat(2, 1fr); }
+}
+
+
+/* ---------- Responsive: small phones ---------- */
+@media (max-width: 560px) {
+  .stat-grid { grid-template-columns: 1fr; }
+  .hero { padding: 20px 18px; border-radius: 12px; }
+  .hero h1 { font-size: 20px; }
+  .hero p { font-size: 13px; }
+  .card { padding: 16px; }
+  .app-body { padding: 14px 12px 96px; }
+  .breadcrumb { padding: 10px 12px 0; font-size: 12px; }
+  .modal { padding: 18px 16px; max-height: 92vh; }
+  .table-wrap table { font-size: 12.5px; }
+  .urg-options { grid-template-columns: repeat(2, 1fr); }
+  .photo-tile { width: 68px; height: 68px; font-size: 22px; }
+  /* Comfortable touch targets (WCAG 2.5.5 / 44px guidance). */
+  .btn { min-height: 44px; }
+  .btn-sm { min-height: 36px; }
+  .chip { min-height: 40px; display: inline-flex; align-items: center; }
+  .topnav a { min-height: 40px; display: inline-flex; align-items: center; }
+  .bottom-nav a { min-height: 48px; }
+  .request-item { padding: 12px 10px; }
 }
 
 /* ---------- Reduced motion ---------- */

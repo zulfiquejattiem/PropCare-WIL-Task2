@@ -154,6 +154,22 @@ const registerUserValidation = [
     .trim()
     .isIn(ROLE_IDS)
     .withMessage(`Role must be one of: ${ROLE_IDS.join(', ')}`),
+  // Optional extras that make a newly created account immediately usable.
+  body('skill')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isLength({ max: 60 })
+    .withMessage('Skill must not exceed 60 characters'),
+  body('propertyId')
+    .optional({ values: 'falsy' })
+    .trim()
+    .matches(/^P\d+$/)
+    .withMessage('Invalid property id'),
+  body('unit')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isLength({ max: 120 })
+    .withMessage('Unit must not exceed 120 characters'),
   handleValidationErrors,
 ];
 
@@ -165,16 +181,34 @@ const updateProfileValidation = [
     .withMessage('Name cannot be empty')
     .isLength({ max: 100 })
     .withMessage('Name must not exceed 100 characters'),
+
+
   body('email')
     .optional()
     .trim()
     .isEmail()
     .withMessage('A valid email address is required')
     .normalizeEmail(),
+
+
   body('password')
     .optional()
     .isLength({ min: 8 })
-    .withMessage('New password must be at least 8 characters long'),
+    .withMessage('New password must be at least 8 characters long')
+    .matches(/[A-Z]/)
+    .withMessage(
+      'New password must contain at least one uppercase letter'
+    )
+    .matches(/[a-z]/)
+    .withMessage(
+      'New password must contain at least one lowercase letter'
+    )
+    .matches(/\d/)
+    .withMessage(
+      'New password must contain at least one number'
+    ),
+
+
   handleValidationErrors,
 ];
 

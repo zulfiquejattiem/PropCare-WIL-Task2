@@ -64,4 +64,4 @@ jobs:
       - name: Deployment Complete
         run: |
           echo "✅ Deploy complete!"
-          echo "🚀 Live at: https://zulfique.github.io/PropCare-WIL-Task1/prototype/"
+          echo "🚀 Live at: https://zulfique.github.io/PropCare-WIL-Task2/prototype/"

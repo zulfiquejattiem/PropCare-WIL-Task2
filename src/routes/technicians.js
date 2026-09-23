@@ -1,6 +1,6 @@
 const express = require('express');
 const { authenticate, authorize } = require('../middleware/auth');
-const { q } = require('../db');
+const { repositories } = require('../repositories');
 
 const router = express.Router();
 
@@ -8,7 +8,7 @@ router.use(authenticate);
 
 // GET /api/technicians - managers and admins only
 router.get('/', authorize('manager', 'admin'), (req, res) => {
-  const technicians = q.allTechnicians().all().map((t) => ({
+  const technicians = repositories.technicians.listAll().map((t) => ({
     id: t.id,
     userId: t.user_id,
     name: t.name,

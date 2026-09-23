@@ -27,6 +27,6 @@ services:
       # Generate a long random value (>= 32 chars) in the Render dashboard.
       - key: JWT_SECRET
         sync: false
-      # Override the shared demo password (must match what you tell users).
+      # Configure this password in Render.
       - key: DEMO_PASSWORD
-        value: PropCare123!
+        sync: false

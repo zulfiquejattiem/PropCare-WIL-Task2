@@ -3,79 +3,113 @@ name: CD - Deploy to Render
 on:
   push:
     branches: [main]
+
   workflow_dispatch:
     inputs:
       hook_url:
-        description: 'Render deploy hook URL (https://api.render.com/deploy/srv-...?...). Leave blank to use the RENDER_DEPLOY_HOOK_URL secret.'
+        description: "Optional Render Deploy Hook URL. Leave empty to use the RENDER_DEPLOY_HOOK_URL repository secret."
         required: false
-      checks_url:
-        description: 'Live app base URL to verify after deploy, e.g. https://propcare-wil-task2.onrender.com'
-        required: false
-        default: https://propcare-wil-task2.onrender.com
+        type: string
 
 jobs:
   deploy:
     name: Deploy PropCare (Render)
     runs-on: ubuntu-latest
-    outputs:
-      deployed: ${{ steps.hook.outputs.deployed }}
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Resolve deploy hook URL
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run automated tests
+        run: npm test
+
+      - name: Run syntax checks
+        run: npm run check
+
+      - name: Select Render deploy hook
         id: hook
         env:
-          SECRET_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
-          INPUT_URL: ${{ inputs.hook_url }}
+          INPUT_HOOK_URL: ${{ inputs.hook_url }}
+          SECRET_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          if [ -n "$INPUT_URL" ]; then
-            echo "hook=$INPUT_URL" >> "$GITHUB_OUTPUT"
-            echo "deployed=true" >> "$GITHUB_OUTPUT"
-          elif [ -n "$SECRET_URL" ]; then
-            echo "hook=$SECRET_URL" >> "$GITHUB_OUTPUT"
-            echo "deployed=true" >> "$GITHUB_OUTPUT"
+          if [ -n "$INPUT_HOOK_URL" ]; then
+            echo "Using the manually supplied Render deploy hook."
+            echo "url=$INPUT_HOOK_URL" >> "$GITHUB_OUTPUT"
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$SECRET_HOOK_URL" ]; then
+            echo "Using the RENDER_DEPLOY_HOOK_URL repository secret."
+            echo "url=$SECRET_HOOK_URL" >> "$GITHUB_OUTPUT"
+            echo "configured=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::No Render deploy hook configured (set RENDER_DEPLOY_HOOK_URL or pass hook_url input) - deploy skipped."
-            echo "deployed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Render deploy hook configured."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Trigger Render deploy hook
         id: render
-        if: steps.hook.outputs.hook != ''
+        if: steps.hook.outputs.configured == 'true'
         env:
-          HOOK_URL: ${{ steps.hook.outputs.hook }}
-        run: curl -fsS -X POST "$HOOK_URL"
+          RENDER_DEPLOY_HOOK_URL: ${{ steps.hook.outputs.url }}
+        run: |
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-delay 5 \
+            -X POST \
+            "$RENDER_DEPLOY_HOOK_URL"
+
+          echo "deployed=true" >> "$GITHUB_OUTPUT"
 
       - name: Confirmed deploy requested
-        run: echo "Render deploy hook triggered for ${{ github.repository }}@${{ github.sha }}"
-
-  verify:
-    name: Verify live deployment
-    needs: deploy
-    if: needs.deploy.outputs.deployed == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Resolve check URL
-        id: check
+        if: steps.render.outputs.deployed == 'true'
         run: |
-          URL="${{ inputs.checks_url }}"
-          if [ -z "$URL" ]; then URL="https://propcare-wil-task2.onrender.com"; fi
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "::notice::Verifying live app at $URL/api/health"
+          echo "Render deploy hook triggered successfully."
+          echo "Repository: ${{ github.repository }}"
+          echo "Commit: ${{ github.sha }}"
 
-      - name: Poll /api/health until ready
+      - name: Deploy skipped
+        if: steps.hook.outputs.configured != 'true'
+        run: |
+          echo "::warning::Render deployment was not triggered."
+          echo "::warning::Configure the RENDER_DEPLOY_HOOK_URL repository secret or provide hook_url when manually running this workflow."
+
+      - name: Wait for Render deployment
+        if: steps.render.outputs.deployed == 'true'
         env:
-          BASE: ${{ steps.check.outputs.url }}
+          RENDER_SERVICE_URL: https://propcare-wil-task2.onrender.com
         run: |
-          deadline=$(( $(date +%s) + 900 ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            code=$(curl -s -o /tmp/health.json -w '%{http_code}' "$BASE/api/health" || true)
-            if [ "$code" = "200" ] && grep -q '"success"' /tmp/health.json; then
-              echo "::notice::Live deployment healthy at $BASE/api/health"
+          echo "Waiting for Render deployment to become healthy..."
+
+          for attempt in {1..30}; do
+            echo "Health check attempt $attempt/30..."
+
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              --max-time 15 \
+              "$RENDER_SERVICE_URL/api/health" > /tmp/health.json; then
+
+              echo "Render health check succeeded."
+              cat /tmp/health.json
               exit 0
             fi
-            echo "Waiting for deploy... (http $code)"
-            sleep 20
+
+            if [ "$attempt" -lt 30 ]; then
+              sleep 10
+            fi
           done
-          echo "::error::Live app did not become healthy within 15 minutes: $BASE/api/health"
+
+          echo "::error::Render deployment was triggered, but the health endpoint did not become healthy within 5 minutes."
           exit 1

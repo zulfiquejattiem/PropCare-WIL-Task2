@@ -1,72 +1,81 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
-const { q } = require('../db');
+const { repositories } = require('../repositories');
+const { resolveActor } = require('../services/requests');
 const { AppError } = require('../middleware/errorHandler');
 
 const router = express.Router();
 
 router.use(authenticate);
 
-function buildSummary(scopeRows) {
-  const statuses = q.countByStatus().all();
-  const stats = {
-    total: 0,
-    open: 0,
-    resolved: 0,
-    byCategory: [],
-    byProperty: [],
-    byStatus: statuses.map((s) => ({ status: s.status, count: s.n })),
+/**
+ * Build the report summary for a caller.
+ *
+ * All aggregation is pushed into SQL (see RequestRepository.totals /
+ * countByStatus / countByCategory) rather than loading every row into memory
+ * and reducing it in JavaScript.
+ */
+function buildSummary(user) {
+  const actor = resolveActor(user);
+  const totals = repositories.requests.totals(actor);
+
+  const byCategory = repositories.requests
+    .countByCategory(actor)
+    .map((c) => ({ name: c.name, count: c.n }))
+    .sort((a, b) => b.count - a.count);
+
+  const byStatus = repositories.requests
+    .countByStatus(actor)
+    .map((s) => ({ status: s.status, count: s.n }))
+    .sort((a, b) => b.count - a.count);
+
+  const scope = actor.role === 'manager' ? { managerId: actor.id } : {};
+  const byProperty = repositories.properties
+    .requestCounts({ ...scope, openOnly: true })
+    .filter((p) => p.n > 0)
+    .map((p) => ({ id: p.id, name: p.name, count: p.n }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    total: totals.total,
+    open: totals.open,
+    resolved: totals.resolved,
+    byCategory,
+    byStatus,
+    byProperty,
   };
-
-  if (!scopeRows) return stats;
-
-  const by = (keyFn, nameFn) => {
-    const map = new Map();
-    scopeRows.forEach((r) => {
-      const k = keyFn(r);
-      if (!map.has(k)) map.set(k, { name: nameFn(r), count: 0 });
-      map.get(k).count += 1;
-    });
-    return Array.from(map.values()).sort((a, b) => b.count - a.count);
-  };
-
-  scopeRows.forEach((r) => {
-    stats.total += 1;
-    if (['submitted', 'under-review', 'assigned', 'in-progress', 'on-hold'].includes(r.status)) {
-      stats.open += 1;
-    } else if (['closed', 'completed'].includes(r.status)) {
-      stats.resolved += 1;
-    }
-  });
-  stats.byCategory = by((r) => r.category, (r) => r.category_name);
-  stats.byProperty = by((r) => r.property_id, (r) => r.property_name);
-
-  return stats;
 }
 
-// GET /api/reports/summary
-// Manager: stats scoped to their portfolio. Admin: platform-wide stats.
+/**
+ * GET /api/reports/summary
+ * Manager: stats scoped to their portfolio. Admin: platform-wide stats.
+ */
 router.get('/summary', (req, res, next) => {
   try {
     if (req.user.role === 'admin') {
-      const all = q.requestAll().all();
-      const summary = buildSummary(all);
+      const summary = buildSummary(req.user);
+
       summary.users = {
-        tenants: q.tenantCount().get().n,
-        managers: q.managerCount().get().n,
-        technicians: q.technicianCount().get().n,
-        admins: q.adminCount().get().n,
+        tenants: repositories.users.countByRole('tenant'),
+        managers: repositories.users.countByRole('manager'),
+        technicians: repositories.users.countByRole('technician'),
+        admins: repositories.users.countByRole('admin'),
       };
-      summary.properties = q.propertyCount().get().n;
-      summary.units = q.unitCount().get().n;
+      summary.properties = repositories.properties.countAll();
+      summary.units = repositories.properties.countUnits();
+
       return res.status(200).json({ status: 'success', data: { summary } });
     }
 
     if (req.user.role === 'manager') {
-      const rows = q.requestByManagerProps().all(req.user.id);
-      const summary = buildSummary(rows);
-      summary.properties = q.countByPropertyForManager().all(req.user.id)
+      const summary = buildSummary(req.user);
+
+      // `properties` is a scalar on the admin payload, so the per-property
+      // breakdown for managers lives under its own, clearly named key.
+      summary.portfolio = repositories.properties
+        .requestCounts({ managerId: req.user.id, openOnly: true })
         .map((p) => ({ id: p.id, name: p.name, count: p.n }));
+
       return res.status(200).json({ status: 'success', data: { summary } });
     }
 
