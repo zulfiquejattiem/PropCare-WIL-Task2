@@ -11,7 +11,7 @@
     "test:watch": "node --experimental-sqlite --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
     "test:browser": "node scripts/browser-test.js",
     "test:browser:shots": "node scripts/browser-test.js --shots-only",
-    "check": "node --check server.js && node --check src/app.js && node --check src/db.js && node --check src/middleware/auth.js && node --check src/middleware/errorHandler.js && node --check src/middleware/validate.js && node --check src/services/requests.js && node --check src/routes/auth.js && node --check src/routes/users.js && node --check src/routes/properties.js && node --check src/routes/requests.js && node --check src/routes/technicians.js && node --check src/routes/tenants.js && node --check src/routes/categories.js && node --check src/routes/notifications.js && node --check src/routes/reports.js && node --check public/js/api.js && node --check public/js/app.js"
+    "check": "node --check server.js && node --check src/app.js && node --check src/db.js && node --check src/middleware/auth.js && node --check src/middleware/errorHandler.js && node --check src/middleware/validate.js && node --check src/utils/labels.js && node --check src/utils/logger.js && node --check src/observers/event-bus.js && node --check src/repositories/base.repository.js && node --check src/services/requests.js && node --check src/routes/auth.js && node --check src/routes/users.js && node --check src/routes/properties.js && node --check src/routes/requests.js && node --check src/routes/technicians.js && node --check src/routes/tenants.js && node --check src/routes/categories.js && node --check src/routes/notifications.js && node --check src/routes/reports.js && node --check src/routes/audit.js && node --check public/js/api.js && node --check public/js/app.js"
   },
   "keywords": [
     "propcare",
@@ -41,6 +41,7 @@
   },
   "devDependencies": {
     "jest": "^29.7.0",
+    "jsdom": "^30.1.1",
     "nodemon": "^3.1.4",
     "puppeteer": "^24.20.0",
     "supertest": "^7.0.0"

@@ -99,6 +99,12 @@
     return { low: 'Low', normal: 'Normal', high: 'High', urgent: 'Urgent' }[id] || id;
   }
 
+  /** Sortable urgency weight: urgent first, low last. */
+  function urgencyRank(id) {
+    var rank = { urgent: 0, high: 1, normal: 2, low: 3 };
+    return rank[id] === undefined ? 9 : rank[id];
+  }
+
   function todayStr() {
     return new Date().toISOString().slice(0, 10);
   }
@@ -325,7 +331,7 @@
       var open = reqs.filter(isOpen);
       var urgent = open.filter(function (r) { return r.urgency === 'urgent' || r.urgency === 'high'; }).length;
       var queue = reqs.slice().sort(function (a, b) {
-        return (a.urgency === b.urgency) ? 0 : (a.urgency === 'urgent' ? -1 : 1);
+        return urgencyRank(a.urgency) - urgencyRank(b.urgency);
       });
       var name = state.user.name.split(' ')[0];
       render(
@@ -407,10 +413,12 @@
     var statusFilter = (qs.match(/status=([\w-]+)/) || [])[1] || 'all';
     var search = (qs.match(/q=([^&]+)/) || [])[1] || '';
     try {
-      var params = '?';
-      if (statusFilter !== 'all') params += 'status=' + statusFilter + '&';
-      // searches happen client-side for snappy feedback
-      var data = await load('/api/requests');
+      // Status is filtered by the API (correct on large lists); the free-text
+      // search stays client-side so results appear as you type.
+      var query = [];
+      if (statusFilter !== 'all') query.push('status=' + encodeURIComponent(statusFilter));
+      var url = '/api/requests' + (query.length ? '?' + query.join('&') : '');
+      var data = await load(url);
       var list = data.requests;
       if (search) {
         search = decodeURIComponent(search).toLowerCase();
@@ -433,17 +441,40 @@
         '<div class="req-list">' +
         (list.map(reqRow).join('') || '<div class="empty"><div class="big">\uD83D\uDD27</div>No requests match your search.</div>') +
         '</div>');
-      bindListControls(search);
+      bindListControls(search, statusFilter);
+      restoreSearchFocus();
     } catch (e) { failUI(e); }
   }
 
-  function bindListControls(search) {
+  /**
+   * Typing in the search box rewrites the hash, which re-renders the screen and
+   * destroys the focused input. Remember the caret and put it back so a user can
+   * type a whole phrase without re-clicking the field.
+   */
+  var searchCaret = null;
+
+  function restoreSearchFocus() {
+    if (!searchCaret) return;
+    var inp = document.getElementById('reqSearch');
+    if (!inp) return;
+    inp.focus();
+    try { inp.setSelectionRange(searchCaret.start, searchCaret.end); } catch (e) { /* older browsers */ }
+  }
+
+  function bindListControls(search, statusFilter) {
     var inp = document.getElementById('reqSearch');
     if (inp) {
       inp.addEventListener('input', function () {
-        var base = '#/requests';
-        if (search && inp.value === '') base += '?' + (location.hash.split('?')[1] || '');
-        location.hash = '#/requests?q=' + encodeURIComponent(inp.value);
+        var value = inp.value;
+        searchCaret = { start: inp.selectionStart, end: inp.selectionEnd };
+        clearTimeout(inp._debounce);
+        // Debounced so a fast typist triggers one navigation, not one per key.
+        inp._debounce = setTimeout(function () {
+          var parts = [];
+          if (statusFilter && statusFilter !== 'all') parts.push('status=' + statusFilter);
+          if (value) parts.push('q=' + encodeURIComponent(value));
+          location.hash = '#/requests' + (parts.length ? '?' + parts.join('&') : '');
+        }, 300);
       });
     }
     body().querySelectorAll('.chip[data-filter]').forEach(function (c) {
@@ -960,7 +991,7 @@
         statCard(s.total, 'Total requests', 'all time') +
         statCard(s.open, 'Open', 'awaiting action') +
         statCard(s.resolved, 'Resolved', 'closed & confirmed') +
-        statCard(s.byStatus.filter(function (x) { return x.status === 'urgent' || x.status === 'high' || x.status === 'in-progress' || x.status === 'on-hold'; }).length, 'Attention flags', 'needs a look') +
+        statCard(s.byStatus.filter(function (x) { return x.status === 'in-progress' || x.status === 'on-hold'; }).length, 'In flight', 'in progress or on hold') +
         '</div>' +
         '<div class="grid two-col">' +
         '<div class="card"><h3 class="card-title">Recurring issues by category</h3>' +
@@ -1034,7 +1065,7 @@
         '<div class="hero"><h1>Assigned jobs</h1><p>' + jobs.length + ' active job(s) &middot; ' + accept.length + ' awaiting your acceptance.</p></div>' +
         '<div class="req-list">' +
         (jobs.map(function (r) {
-          return '<div class="request-item" data-id="' + r.id + '" tabindex="0" role="link" aria-label="Open job ' + esc(r.id) + '"><div>' +
+          return '<div class="request-item" data-id="' + esc(r.id) + '" tabindex="0" role="link" aria-label="Open job ' + esc(r.id) + '"><div>' +
             '<div class="r-main">' + esc(r.title) + '</div>' +
             '<div class="r-sub">' + esc(r.id) + ' &middot; ' + esc(r.unit) + ' &middot; ' + esc(r.propertyName || '') + '</div></div>' +
             '<div class="r-right">' + badge(r.status) + '</div></div>';
@@ -1071,7 +1102,7 @@
         '<div class="hero"><h1>Completed jobs</h1><p>' + done.length + ' jobs completed, verified with before/after photos.</p></div>' +
         '<div class="req-list">' +
         (done.map(function (r) {
-          return '<div class="request-item" data-id="' + r.id + '" tabindex="0" role="link" aria-label="Open job ' + esc(r.id) + '"><div>' +
+          return '<div class="request-item" data-id="' + esc(r.id) + '" tabindex="0" role="link" aria-label="Open job ' + esc(r.id) + '"><div>' +
             '<div class="r-main">' + esc(r.title) + '</div>' +
             '<div class="r-sub">' + esc(r.id) + ' &middot; ' + esc(r.unit) + '</div></div>' +
             '<div class="r-right">' + badge(r.status) + '</div></div>';
@@ -1111,31 +1142,78 @@
     } catch (e) { failUI(e); }
   }
 
+  /**
+   * Add-user modal.
+   *
+   * The role drives the extra fields: a tenant must be attached to a property
+   * and unit (otherwise they cannot raise a request), and a technician needs a
+   * trade so they appear in the manager's assignment list.
+   */
   function addUserModal() {
-    openModal('<h2 id="modalTitle">Add a user</h2>' +
-      '<label class="field-label" for="nuName">Full name</label><input class="field" id="nuName" placeholder="e.g. Jane Doe">' +
-      '<label class="field-label" for="nuEmail">Email</label><input class="field" id="nuEmail" type="email" placeholder="jane@example.com">' +
-      '<label class="field-label" for="nuRole">Role</label><select class="field" id="nuRole">' +
-      '<option value="tenant">Tenant</option><option value="manager">Property Manager</option><option value="technician">Technician</option>' +
-      '</select>' +
-      '<label class="field-label" for="nuPass">Temporary password (min 8 chars, UPPER + lower + number)</label><input class="field" id="nuPass" type="password" value="">' +
-      '<div class="modal-actions"><button type="button" class="btn btn-ghost" data-close="1">Cancel</button>' +
-      '<button type="button" class="btn btn-accent" id="nuOk">Create user</button></div>');
-    document.getElementById('nuOk').addEventListener('click', function () {
-      var b = this; b.disabled = true;
-      var name = document.getElementById('nuName').value.trim();
-      var email = document.getElementById('nuEmail').value.trim();
-      var role = document.getElementById('nuRole').value;
-      var password = document.getElementById('nuPass').value;
-      API.post('/api/users', { name: name, email: email, role: role, password: password })
-        .then(function (res) {
-          toast('User ' + res.data.user.email + ' created.');
-          closeModal();
-          screenUsers();
-        })
-        .catch(function (e) { toast(e.message || 'Could not create user.'); b.disabled = false; });
-    });
-    wireModalClose();
+    load('/api/properties').then(function (d) {
+      var propOpts = d.properties.map(function (p) {
+        return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' &middot; ' + esc(p.area) + '</option>';
+      }).join('');
+
+      var extra =
+        '<div id="tenantFields">' +
+        '<label class="field-label" for="nuProperty">Property</label><select class="field" id="nuProperty">' + propOpts + '</select>' +
+        '<label class="field-label" for="nuUnit">Unit</label><input class="field" id="nuUnit" placeholder="e.g. Claremont Unit 4B">' +
+        '</div>' +
+        '<div id="techFields" class="hidden">' +
+        '<label class="field-label" for="nuSkill">Trade / skill</label>' +
+        '<select class="field" id="nuSkill">' +
+        ['Plumbing', 'Electrical', 'Heating & cooling', 'Security', 'Appliances', 'General maintenance']
+          .map(function (sk) { return '<option value="' + esc(sk) + '">' + esc(sk) + '</option>'; }).join('') +
+        '</select></div>';
+
+      openModal('<h2 id="modalTitle">Add a user</h2>' +
+        '<label class="field-label" for="nuName">Full name</label><input class="field" id="nuName" placeholder="e.g. Jane Doe">' +
+        '<label class="field-label" for="nuEmail">Email</label><input class="field" id="nuEmail" type="email" placeholder="jane@example.com">' +
+        '<label class="field-label" for="nuRole">Role</label><select class="field" id="nuRole">' +
+        '<option value="tenant">Tenant</option><option value="manager">Property Manager</option>' +
+        '<option value="technician">Technician</option><option value="admin">Administrator</option>' +
+        '</select>' +
+        extra +
+        '<label class="field-label" for="nuPass">Temporary password (min 8 chars, UPPER + lower + number)</label>' +
+        '<input class="field" id="nuPass" type="password" value="">' +
+        '<div class="modal-actions"><button type="button" class="btn btn-ghost" data-close="1">Cancel</button>' +
+        '<button type="button" class="btn btn-accent" id="nuOk">Create user</button></div>');
+
+      var syncRole = function () {
+        var role = document.getElementById('nuRole').value;
+        document.getElementById('tenantFields').classList.toggle('hidden', role !== 'tenant');
+        document.getElementById('techFields').classList.toggle('hidden', role !== 'technician');
+      };
+      document.getElementById('nuRole').addEventListener('change', syncRole);
+      syncRole();
+
+      document.getElementById('nuOk').addEventListener('click', function () {
+        var b = this; b.disabled = true;
+        var role = document.getElementById('nuRole').value;
+        var payload = {
+          name: document.getElementById('nuName').value.trim(),
+          email: document.getElementById('nuEmail').value.trim(),
+          role: role,
+          password: document.getElementById('nuPass').value
+        };
+        if (role === 'tenant') {
+          payload.propertyId = document.getElementById('nuProperty').value;
+          payload.unit = document.getElementById('nuUnit').value.trim();
+          if (!payload.unit) { toast('Enter the unit this tenant occupies.'); b.disabled = false; return; }
+        }
+        if (role === 'technician') payload.skill = document.getElementById('nuSkill').value;
+
+        API.post('/api/users', payload)
+          .then(function (res) {
+            toast('User ' + res.data.user.email + ' created.');
+            closeModal();
+            screenUsers();
+          })
+          .catch(function (e) { toast(e.message || 'Could not create user.'); b.disabled = false; });
+      });
+      wireModalClose();
+    }).catch(function (e) { toast(e.message || 'Could not load properties.'); });
   }
 
   async function screenCategories() {

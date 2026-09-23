@@ -25,35 +25,41 @@ describe('Reports API - GET /api/reports/summary', () => {
 
     const s = res.body.data.summary;
 
-
-    expect(s.total).toBe(9);
-    expect(s.open).toBe(8);
+    // Michael manages P1, P2, P4, P6, P8 and P10. The seed places exactly
+    // eight requests on those properties:
+    //   REQ-1045, REQ-1046, REQ-1076 (P1) | REQ-1032 (P2) | REQ-1038 (P4)
+    //   REQ-1061 (P6) | REQ-1009 (P8)    | REQ-1078 (P10)
+    // -> 8 total, 7 open, 1 resolved (closed).
+    expect(s.total).toBe(8);
+    expect(s.open).toBe(7);
     expect(s.resolved).toBe(1);
-
 
     expect(Array.isArray(s.byCategory)).toBe(true);
     expect(Array.isArray(s.byProperty)).toBe(true);
     expect(Array.isArray(s.byStatus)).toBe(true);
 
-
+    // P1 carries three open requests - the busiest property in his portfolio.
     expect(s.byProperty[0].count).toBe(3);
-    expect(s.properties.length).toBe(6);
-
+    // Per-property breakdown for the manager, one entry per managed property.
+    expect(s.portfolio.length).toBe(6);
 
     const statusCounts = Object.fromEntries(
       s.byStatus.map((item) => [item.status, item.count])
     );
 
-
     expect(statusCounts['in-progress']).toBe(2);
-    expect(statusCounts.completed).toBe(1);
+    expect(statusCounts['under-review']).toBe(2);
     expect(statusCounts.closed).toBe(1);
-    expect(statusCounts.submitted).toBe(2);
+    expect(statusCounts.submitted).toBe(1);
+    expect(statusCounts.assigned).toBe(1);
+    expect(statusCounts['on-hold']).toBe(1);
+    // No completed request exists inside Michael's portfolio.
+    expect(statusCounts.completed || 0).toBe(0);
 
-
-    // Requests belonging to Ayesha's portfolio must not appear
-    // in Michael's status totals.
-    expect(statusCounts.assigned || 0).toBe(0);
+    // Requests belonging to Ayesha's portfolio must not appear in Michael's
+    // totals: her properties are P3, P5, P7 and P9.
+    const ids = s.byCategory.reduce((n, c) => n + c.count, 0);
+    expect(ids).toBe(8);
   });
 
   it('returns platform-wide totals for an admin', async () => {
@@ -109,7 +115,10 @@ describe('Reference data API', () => {
     expect(res.status).toBe(200);
     const cats = res.body.data.categories;
     expect(cats.length).toBe(5);
-    expect(cats.find((c) => c.id === 'plumbing').count).toBe(4);
+    // Counts are scoped to the caller: Sarah (U1) has four requests, two of
+    // which are plumbing. Portfolio-wide plumbing volume is 4.
+    expect(cats.find((c) => c.id === 'plumbing').count).toBe(2);
+    expect(cats.reduce((n, c) => n + c.count, 0)).toBe(4);
   });
 
   it('returns a single category', async () => {
@@ -120,6 +129,8 @@ describe('Reference data API', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.category.name).toBe('Electrical');
+    // Sarah has one electrical request (REQ-1019 is Ayesha's portfolio).
+    expect(res.body.data.category.count).toBe(0);
   });
 
   it('returns 404 for an unknown category', async () => {

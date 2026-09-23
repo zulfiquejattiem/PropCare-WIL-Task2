@@ -1,12 +1,16 @@
-﻿/**
- * PropCare - SQLite data layer.
+/**
+ * PropCare - SQLite connection, schema, migrations and seed data.
  *
- * Uses the built-in `node:sqlite` module (Node >= 22.5).
- * The database file is created automatically on first run and seeded with
- * the Obs Realty Group demo dataset when it is empty.
+ * Uses the built-in `node:sqlite` module (Node >= 22.5). The database file is
+ * created automatically on first run and seeded with the Obs Realty Group demo
+ * dataset when it is empty.
  *
- * NOTE: `node:sqlite` is flagged experimental in Node 22/23, so the server
- * is started with `--experimental-sqlite` (see package.json scripts).
+ * NOTE: `node:sqlite` is flagged experimental in Node 22/23, so the server is
+ * started with `--experimental-sqlite` (see package.json scripts).
+ *
+ * This module owns *only* the connection and the physical schema. All data
+ * access lives in `src/repositories/**` (Repository pattern), so no route or
+ * service ever talks to the driver directly.
  */
 const path = require('path');
 const fs = require('node:fs');
@@ -42,7 +46,9 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   role          TEXT NOT NULL CHECK (role IN ('tenant','manager','technician','admin')),
   active        INTEGER NOT NULL DEFAULT 1,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  failed_logins INTEGER NOT NULL DEFAULT 0,
+  locked_until  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS properties (
@@ -67,7 +73,7 @@ CREATE TABLE IF NOT EXISTS categories (
 
 CREATE TABLE IF NOT EXISTS technicians (
   id      TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL REFERENCES users(id),
+  user_id TEXT NOT NULL UNIQUE REFERENCES users(id),
   skill   TEXT NOT NULL
 );
 
@@ -121,11 +127,76 @@ CREATE TABLE IF NOT EXISTS ratings (
   stars      INTEGER NOT NULL CHECK (stars BETWEEN 1 AND 5),
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id    TEXT,
+  actor_name  TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id   TEXT,
+  detail      TEXT,
+  created_at  TEXT NOT NULL
+);
 `;
 
-db.exec(SCHEMA);
+/**
+ * Indexes.
+ *
+ * Every foreign key that is used in a WHERE/JOIN clause gets an index: SQLite
+ * does not create them automatically, and the requests list is filtered by
+ * tenant, technician, property-manager and status on every page load.
+ */
+const INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)',
+  'CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)',
+  'CREATE INDEX IF NOT EXISTS idx_units_user ON units(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_units_property ON units(property_id)',
+  'CREATE INDEX IF NOT EXISTS idx_properties_manager ON properties(manager_id)',
+  'CREATE INDEX IF NOT EXISTS idx_technicians_user ON technicians(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_requests_tenant ON requests(tenant_id)',
+  'CREATE INDEX IF NOT EXISTS idx_requests_tech ON requests(tech_id)',
+  'CREATE INDEX IF NOT EXISTS idx_requests_property ON requests(property_id)',
+  'CREATE INDEX IF NOT EXISTS idx_requests_category ON requests(category)',
+  'CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status)',
+  'CREATE INDEX IF NOT EXISTS idx_requests_updated ON requests(updated DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comments_request ON comments(request_id)',
+  'CREATE INDEX IF NOT EXISTS idx_history_request ON history(request_id)',
+  'CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read)',
+  'CREATE INDEX IF NOT EXISTS idx_ratings_request ON ratings(request_id)',
+  'CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id)',
+];
 
-/** Reference collections treated as code constants (kept in sync with the UI). */
+/**
+ * Forward-only migrations.
+ *
+ * `CREATE TABLE IF NOT EXISTS` never alters an existing table, so deployments
+ * that already hold a database (Render's persistent disk) need these additive
+ * column migrations before the new code can query them.
+ */
+const COLUMN_MIGRATIONS = [
+  { table: 'users', column: 'failed_logins', ddl: 'failed_logins INTEGER NOT NULL DEFAULT 0' },
+  { table: 'users', column: 'locked_until', ddl: 'locked_until TEXT' },
+];
+
+function runMigrations() {
+  for (const { table, column, ddl } of COLUMN_MIGRATIONS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+  }
+  for (const ddl of INDEXES) db.exec(ddl);
+}
+
+db.exec(SCHEMA);
+runMigrations();
+
+/* ------------------------------------------------------------------ */
+/* Reference collections treated as code constants (kept in sync with the UI). */
+/* ------------------------------------------------------------------ */
+
 const URGENCIES = [
   { id: 'low', name: 'Low' },
   { id: 'normal', name: 'Normal' },
@@ -147,8 +218,11 @@ const STATUSES = [
 
 const OPEN_STATUSES = ['submitted', 'under-review', 'assigned', 'in-progress', 'on-hold'];
 
+/** Statuses that count as finished work in reports. */
+const RESOLVED_STATUSES = ['completed', 'closed'];
+
 /* ------------------------------------------------------------------ */
-/* Seed data                                                          */
+/* Seed data                                                           */
 /* ------------------------------------------------------------------ */
 
 async function seedDatabase() {
@@ -319,13 +393,13 @@ async function seedDatabase() {
   });
 
   const notifications = [
-    ['U1', '\uD83D\uDD14', 'Reminder: technician visit scheduled for REQ-1045 tomorrow.', '2026-08-13 16:00'],
-    ['U1', '\u2705', 'REQ-1027 (dishwasher) marked complete - please confirm.', '2026-08-12 10:22'],
-    ['U2', '\uD83D\uDD27', 'New request REQ-1078 awaiting review.', '2026-08-14 08:00'],
-    ['U2', '\uD83D\uDD27', 'Johan van der Merwe started work on REQ-1045.', '2026-08-14 14:40'],
-    ['U9', '\uD83D\uDD27', 'You have been assigned REQ-1045.', '2026-08-08 11:02'],
-    ['U9', '\u2705', 'Job REQ-1027 completed - awaiting tenant confirmation.', '2026-08-09 10:00'],
-    ['U14', '\uD83C\uDFE2', 'Inspection completed at Milnerton Sands Unit 11.', '2026-08-10 12:05'],
+    ['U1', '🔔', 'Reminder: technician visit scheduled for REQ-1045 tomorrow.', '2026-08-13 16:00'],
+    ['U1', '✅', 'REQ-1027 (dishwasher) marked complete - please confirm.', '2026-08-12 10:22'],
+    ['U2', '🔧', 'New request REQ-1078 awaiting review.', '2026-08-14 08:00'],
+    ['U2', '🔧', 'Johan van der Merwe started work on REQ-1045.', '2026-08-14 14:40'],
+    ['U9', '🔧', 'You have been assigned REQ-1045.', '2026-08-08 11:02'],
+    ['U9', '✅', 'Job REQ-1027 completed - awaiting tenant confirmation.', '2026-08-09 10:00'],
+    ['U14', '🏢', 'Inspection completed at Milnerton Sands Unit 11.', '2026-08-10 12:05'],
   ];
   notifications.forEach(([userId, icon, title, createdAt]) => {
     insertNotification.run(userId, icon, title, createdAt);
@@ -337,186 +411,25 @@ async function seedDatabase() {
   console.log(`[propcare] demo password for all accounts: ${process.env.DEMO_PASSWORD || 'not configured'}`);
 }
 
-/* ------------------------------------------------------------------ */
-/* Queries                                                            */
-/* ------------------------------------------------------------------ */
-
-const q = {
-  userById: () => db.prepare(`
-    SELECT id, name, email, role, active, created_at FROM users WHERE id = ?
-  `),
-  userByIdFull: () => db.prepare(`
-    SELECT * FROM users WHERE id = ?
-  `),
-  userByEmail: () => db.prepare(`
-    SELECT * FROM users WHERE email = ?
-  `),
-  allUsers: () => db.prepare(`
-    SELECT id, name, email, role, active, created_at FROM users ORDER BY name
-  `),
-  unitsForUser: () => db.prepare(`
-    SELECT u.name, p.id AS property_id, p.name AS property_name
-    FROM units u JOIN properties p ON p.id = u.property_id
-    WHERE u.user_id = ?
-  `),
-  propertiesAll: () => db.prepare(`
-    SELECT p.*, u.name AS manager_name FROM properties p
-    JOIN users u ON u.id = p.manager_id ORDER BY p.name
-  `),
-  propertiesForManager: () => db.prepare(`
-    SELECT p.*, u.name AS manager_name FROM properties p
-    JOIN users u ON u.id = p.manager_id WHERE p.manager_id = ? ORDER BY p.name
-  `),
-  propertiesForRequests: () => db.prepare(`
-    SELECT DISTINCT p.*, u.name AS manager_name FROM properties p
-    JOIN users u ON u.id = p.manager_id
-    JOIN requests r ON r.property_id = p.id
-    WHERE r.tenant_id = ? ORDER BY p.name
-  `),
-  propertiesForTechnician: () => db.prepare(`
-    SELECT DISTINCT p.*, u.name AS manager_name
-    FROM properties p
-    JOIN users u ON u.id = p.manager_id
-    JOIN requests r ON r.property_id = p.id
-    WHERE r.tech_id = ? ORDER BY p.name
-  `),
-  propertyById: () => db.prepare(`
-    SELECT p.*, u.name AS manager_name FROM properties p
-    JOIN users u ON u.id = p.manager_id WHERE p.id = ?
-  `),
-  allCategories: () => db.prepare(`
-    SELECT id, name FROM categories ORDER BY name
-  `),
-  allTechnicians: () => db.prepare(`
-    SELECT t.id, u.id AS user_id, u.name, u.email, t.skill
-    FROM technicians t JOIN users u ON u.id = t.user_id ORDER BY u.name
-  `),
-  technicianById: () => db.prepare(`
-    SELECT t.id, u.id AS user_id, u.name, u.email, t.skill
-    FROM technicians t JOIN users u ON u.id = t.user_id WHERE t.id = ?
-  `),
-  technicianByUserId: () => db.prepare(`
-    SELECT t.id, u.id AS user_id, u.name, u.email, t.skill
-    FROM technicians t JOIN users u ON u.id = t.user_id WHERE u.id = ?
-  `),
-  requestById: () => db.prepare(`
-    SELECT r.*, c.name AS category_name, u.name AS tenant_name, p.name AS property_name,
-           tu.name AS technician_name, tech.skill AS technician_skill
-    FROM requests r
-    JOIN categories c ON c.id = r.category
-    JOIN users u ON u.id = r.tenant_id
-    JOIN properties p ON p.id = r.property_id
-    LEFT JOIN technicians tech ON tech.id = r.tech_id
-    LEFT JOIN users tu ON tu.id = tech.user_id
-    WHERE r.id = ?
-  `),
-requestByTenant: () => db.prepare(`
-    SELECT r.id, r.title, r.detail, r.category, r.urgency, r.status, r.unit, r.created,
-           r.updated, r.photos, r.tech_id, c.name AS category_name, p.name AS property_name
-    FROM requests r
-    JOIN categories c ON c.id = r.category
-    JOIN properties p ON p.id = r.property_id
-    WHERE r.tenant_id = ? ORDER BY r.updated DESC
-  `),
-  requestIdsByTenant: () => db.prepare('SELECT id FROM requests WHERE tenant_id = ?'),
-requestByTechnician: () => db.prepare(`
-    SELECT r.id, r.title, r.detail, r.category, r.urgency, r.status, r.unit, r.created,
-           r.updated, r.photos, r.tech_id, c.name AS category_name, p.name AS property_name
-    FROM requests r
-    JOIN categories c ON c.id = r.category
-    JOIN properties p ON p.id = r.property_id
-    WHERE r.tech_id = ? ORDER BY r.updated DESC
-  `),
-requestByManagerProps: () => db.prepare(`
-    SELECT r.id, r.title, r.detail, r.category, r.urgency, r.status, r.unit, r.created,
-           r.updated, r.photos, r.tech_id, c.name AS category_name, r.property_id, p.name AS property_name
-    FROM requests r
-    JOIN categories c ON c.id = r.category
-    JOIN properties p ON p.id = r.property_id
-    WHERE p.manager_id = ? ORDER BY r.updated DESC
-  `),
-  requestIdsByManagerProps: () => db.prepare(`
-    SELECT r.id FROM requests r JOIN properties p ON p.id = r.property_id WHERE p.manager_id = ?
-  `),
-requestAll: () => db.prepare(`
-    SELECT r.id, r.title, r.detail, r.category, r.urgency, r.status, r.unit, r.created,
-           r.updated, r.photos, r.tech_id, c.name AS category_name, r.property_id, p.name AS property_name
-    FROM requests r
-    JOIN categories c ON c.id = r.category
-    JOIN properties p ON p.id = r.property_id
-    ORDER BY r.updated DESC
-  `),
-  requestIdsAll: () => db.prepare('SELECT id FROM requests'),
-  insertRequest: () => db.prepare(`
-    INSERT INTO requests (id, property_id, unit, tenant_id, category, title, detail, urgency, status, tech_id, created, updated, photos)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted', NULL, ?, ?, 0)
-  `),
-  updateRequestStatus: () => db.prepare('UPDATE requests SET status = ?, updated = ? WHERE id = ?'),
-  updateRequestAssign: () => db.prepare('UPDATE requests SET tech_id = ?, urgency = ?, status = ?, updated = ? WHERE id = ?'),
-  incrementPhotos: () => db.prepare('UPDATE requests SET photos = photos + 1, updated = ? WHERE id = ?'),
-  commentsForRequest: () => db.prepare(`
-    SELECT id, user_id, name, role_label, text, created_at FROM comments
-    WHERE request_id = ? ORDER BY created_at ASC
-  `),
-  insertComment: () => db.prepare(
-    'INSERT INTO comments (request_id, user_id, name, role_label, text, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-  ),
-  historyForRequest: () => db.prepare(`
-    SELECT status, created_at FROM history WHERE request_id = ? ORDER BY created_at ASC
-  `),
-  insertHistory: () => db.prepare(
-    'INSERT INTO history (request_id, status, created_at) VALUES (?, ?, ?)'
-  ),
-  ratingForRequest: () => db.prepare(`
-    SELECT stars FROM ratings WHERE request_id = ?
-  `),
-  insertRating: () => db.prepare(
-    'INSERT INTO ratings (request_id, user_id, stars, created_at) VALUES (?, ?, ?, ?)'
-  ),
-  nextReqNumber: () => db.prepare(`
-    SELECT COALESCE(
-      CAST(REPLACE(MAX(id), 'REQ-', '') AS INTEGER),
-      1079
-    ) AS n FROM requests
-  `),
-  notificationsForUser: () => db.prepare(`
-    SELECT id, icon, title, created_at, read FROM notifications
-    WHERE user_id = ? ORDER BY created_at DESC
-  `),
-  insertNotification: () => db.prepare(
-    'INSERT INTO notifications (user_id, icon, title, created_at, read) VALUES (?, ?, ?, ?, 0)'
-  ),
-  markNotificationsRead: () => db.prepare('UPDATE notifications SET read = 1 WHERE user_id = ? AND read = 0'),
-  unreadCount: () => db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read = 0'),
-  countByCategory: () => db.prepare(`
-    SELECT c.id, c.name, COUNT(r.id) AS n FROM categories c
-    LEFT JOIN requests r ON r.category = c.id GROUP BY c.id ORDER BY n DESC
-  `),
-  countByStatus: () => db.prepare(`
-    SELECT status, COUNT(*) AS n FROM requests GROUP BY status
-  `),
-  countByProperty: () => db.prepare(`
-    SELECT p.id, p.name, COUNT(r.id) AS n FROM properties p
-    LEFT JOIN requests r ON r.property_id = p.id GROUP BY p.id ORDER BY p.name
-  `),
-  countByPropertyForManager: () => db.prepare(`
-    SELECT p.id, p.name, COUNT(r.id) AS n FROM properties p
-    LEFT JOIN requests r ON r.property_id = p.id
-    WHERE p.manager_id = ? GROUP BY p.id ORDER BY p.name
-  `),
-  tenantCount: () => db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'tenant'"),
-  managerCount: () => db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'manager'"),
-  technicianCount: () => db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'technician'"),
-  adminCount: () => db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'"),
-  propertyCount: () => db.prepare('SELECT COUNT(*) AS n FROM properties'),
-  unitCount: () => db.prepare('SELECT COUNT(*) AS n FROM units'),
-};
+/** Run several writes as one atomic unit (all repositories use this for multi-table writes). */
+function transaction(fn) {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
 
 module.exports = {
   db,
-  q,
+  transaction,
   URGENCIES,
   STATUSES,
   OPEN_STATUSES,
+  RESOLVED_STATUSES,
   seedDatabase,
 };

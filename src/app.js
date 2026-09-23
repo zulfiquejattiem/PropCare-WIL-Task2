@@ -6,7 +6,8 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 const { seedDatabase } = require('./db');
-const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
+const { registerObservers } = require('./observers');
+const { errorHandler, notFoundHandler, AppError } = require('./middleware/errorHandler');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const propertyRoutes = require('./routes/properties');
@@ -15,7 +16,9 @@ const technicianRoutes = require('./routes/technicians');
 const tenantRoutes = require('./routes/tenants');
 const referenceRoutes = require('./routes/categories');
 const notificationRoutes = require('./routes/notifications');
+const auditRoutes = require('./routes/audit');
 const reportRoutes = require('./routes/reports');
+const logger = require('./utils/logger');
 
 const app = express();
 
@@ -59,15 +62,33 @@ const authLimiter = isTest
       },
     });
 
+/* ------------------------------------------------------------------ */
+/* Domain events: register the observers once, at boot.                */
+/* ------------------------------------------------------------------ */
+
+registerObservers();
+
+/* ------------------------------------------------------------------ */
+/* Database seeding                                                    */
+/* ------------------------------------------------------------------ */
+
 // Database seeding is idempotent; await it before handling any request.
+// The rejection is handled here as well as per-request so a misconfigured
+// DEMO_PASSWORD logs a clear error instead of crashing the process with an
+// unhandled rejection before the server can even start listening.
 const seedPromise = seedDatabase();
+let seedError = null;
+
+seedPromise.catch((err) => {
+  seedError = err;
+  process.stderr.write(`[propcare] seed failure: ${err.message}\n`);
+  logger.error('Database seeding failed', { message: err.message });
+});
+
 app.use((req, res, next) => {
   seedPromise
     .then(() => next())
-    .catch((err) => {
-      process.stderr.write(`[propcare] seed failure: ${err.message}\n`);
-      next();
-    });
+    .catch(() => next());
 });
 
 app.disable('x-powered-by');
@@ -83,8 +104,15 @@ app.use(
             fontSrc: ["'self'", 'https://fonts.gstatic.com'],
             imgSrc: ["'self'", 'data:'],
             connectSrc: ["'self'"],
+            frameAncestors: ["'none'"],
+            baseUri: ["'self'"],
+            formAction: ["'self'"],
           },
         },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    hsts: process.env.NODE_ENV === 'production'
+      ? { maxAge: 15552000, includeSubDomains: true }
+      : false,
   })
 );
 app.use(
@@ -95,11 +123,9 @@ app.use(
         return callback(null, true);
       }
 
-
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
-
 
       // Reject the origin without converting the request into an
       // application-level 500 error.
@@ -140,7 +166,11 @@ app.use(
 
 // API health + welcome
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'success', message: 'PropCare API is running' });
+  res.status(200).json({
+    status: 'success',
+    message: 'PropCare API is running',
+    data: { database: seedError ? 'not seeded' : 'ready', time: new Date().toISOString() },
+  });
 });
 
 app.get('/api', (req, res) => {
@@ -157,10 +187,17 @@ app.get('/api', (req, res) => {
         me: 'GET /api/auth/me',
         requests: 'GET/POST /api/requests',
         requestDetail: 'GET /api/requests/:id',
+        requestStatus: 'POST /api/requests/:id/status',
+        requestAssign: 'POST /api/requests/:id/assign',
+        requestRate: 'POST /api/requests/:id/rate',
+        requestComments: 'POST /api/requests/:id/comments',
+        requestPhotos: 'POST /api/requests/:id/photos',
         categories: 'GET /api/categories',
         properties: 'GET /api/properties',
         technicians: 'GET /api/technicians',
+        tenants: 'GET /api/tenants',
         notifications: 'GET /api/notifications',
+        auditLog: 'GET /api/audit-log (admin)',
         reports: 'GET /api/reports/summary',
       },
     },
@@ -180,10 +217,22 @@ app.use('/api/technicians', technicianRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api', referenceRoutes); // categories, statuses, urgencies
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/audit-log', auditRoutes);
 app.use('/api/reports', reportRoutes);
 
-// SPA fallback - serve index.html for non-API routes.
-app.get(/^\/(?!api\/).*/, (req, res) => {
+/**
+ * SPA fallback - serve index.html for non-API routes.
+ *
+ * Paths that look like a static asset (an extension) are *not* rewritten:
+ * they must 404 so a broken <script>/<link> reference surfaces immediately
+ * instead of silently serving HTML to the browser.
+ */
+const ASSET_EXTENSION = /\.[a-z0-9]{1,5}$/i;
+
+app.get(/^\/(?!api\/).*/, (req, res, next) => {
+  if (ASSET_EXTENSION.test(req.path)) {
+    return next(new AppError(`Asset ${req.path} not found`, 404));
+  }
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
@@ -191,3 +240,4 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 module.exports = app;
+module.exports.getSeedError = () => seedError;
