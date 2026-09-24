@@ -408,20 +408,49 @@ async function seedDatabase() {
   insertRating.run('REQ-1027', 'U5', 5, '2026-08-10 11:00');
 
   console.log(`[propcare] seeded database with ${users.length} users, ${properties.length} properties and ${requests.length} requests.`);
-  console.log(`[propcare] demo password for all accounts: ${process.env.DEMO_PASSWORD || 'not configured'}`);
+  // Never echo the password itself: DEMO_PASSWORD may be configured with a real
+  // value, and anything logged here ends up in the host's log stream.
+  console.log(
+    '[propcare] demo accounts ready - password comes from DEMO_PASSWORD ' +
+    (process.env.DEMO_PASSWORD ? `(${process.env.DEMO_PASSWORD.length} chars, not shown)` : '(not configured)')
+  );
 }
 
-/** Run several writes as one atomic unit (all repositories use this for multi-table writes). */
+/**
+ * Run several writes as one atomic unit (all repositories use this for
+ * multi-table writes).
+ *
+ * `fn` MUST be synchronous. `node:sqlite` is a synchronous driver, so an
+ * `async` callback would return a pending promise: COMMIT would run before the
+ * awaited writes happen, and a later failure could not be rolled back. Rather
+ * than corrupt data silently, an async callback is rejected outright.
+ */
 function transaction(fn) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('transaction(fn) requires a function');
+  }
+
   db.exec('BEGIN');
+
+  let result;
   try {
-    const result = fn();
-    db.exec('COMMIT');
-    return result;
+    result = fn();
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
   }
+
+  if (result && typeof result.then === 'function') {
+    db.exec('ROLLBACK');
+    throw new TypeError(
+      'transaction(fn) does not support async callbacks - the transaction would ' +
+      'commit before the awaited work runs and ROLLBACK could not undo it. ' +
+      'Keep the callback synchronous.'
+    );
+  }
+
+  db.exec('COMMIT');
+  return result;
 }
 
 module.exports = {

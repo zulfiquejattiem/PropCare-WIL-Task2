@@ -13,6 +13,10 @@ const BASE =
 const SHOTS = path.join(__dirname, '..', 'browser-shots');
 const SHOTS_ONLY = process.argv.indexOf('--shots-only') !== -1;
 
+// Optional path to a Chrome/Chromium binary. Leave unset to let Puppeteer use
+// the browser it downloaded during `npm ci`.
+const CHROME = process.env.PPC_CHROME || process.env.CHROME_PATH || '';
+
 const PASS = 'PASS', FAIL = 'FAIL', INFO = 'INFO';
 const results = [];
 let errors = [];
