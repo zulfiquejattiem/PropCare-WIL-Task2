@@ -17,7 +17,15 @@
   }
 
   function initials(name) {
-    return name.split(' ').map(function (w) { return w[0]; }).slice(0, 2).join('').toLowerCase();
+    // Names arrive from the API, so guard the same way `esc` does: a null or
+    // empty name must render an empty avatar, not throw and blank the screen.
+    return String(name == null ? '' : name)
+      .split(' ')
+      .filter(Boolean)
+      .map(function (w) { return w[0]; })
+      .slice(0, 2)
+      .join('')
+      .toLowerCase();
   }
 
   function statusClass(sid) { return 'st-' + sid; }
@@ -982,8 +990,16 @@
     try {
       var d = await load('/api/reports/summary');
       var s = d.summary;
-      var isAdmin = state.user.role === 'admin';
       var varRow = function (a, b) { return '<div class="inline-stat"><span>' + esc(a) + '</span><b>' + esc(b) + '</b></div>'; };
+      // Derived from the data: a hardcoded sentence here would start lying the
+      // moment another category overtook it. `byCategory` arrives sorted desc.
+      var topCategory = s.byCategory.reduce(function (best, c) {
+        return c.count > (best ? best.count : -1) ? c : best;
+      }, null);
+      var topCategoryNote = topCategory && topCategory.count > 0
+        ? esc(topCategory.name) + ' is the most common category across the portfolio, with ' +
+          topCategory.count + ' ' + (topCategory.count === 1 ? 'request' : 'requests') + '.'
+        : 'No requests recorded yet.';
       render(
         '<div class="hero"><h1>Maintenance reports</h1><p>' + s.total + ' requests total &middot; ' + s.open +
         ' open &middot; ' + s.resolved + ' resolved.</p></div>' +
@@ -996,7 +1012,7 @@
         '<div class="grid two-col">' +
         '<div class="card"><h3 class="card-title">Recurring issues by category</h3>' +
         (s.byCategory.map(function (c) { return varRow(c.name, c.count); }).join('') || 'No data yet.') +
-        '<p style="font-size:12.5px;color:var(--muted);margin-top:10px">Plumbing is the most common category across the portfolio this quarter.</p></div>' +
+        '<p style="font-size:12.5px;color:var(--muted);margin-top:10px">' + topCategoryNote + '</p></div>' +
         '<div class="card"><h3 class="card-title">Open issues by property</h3>' +
         (s.byProperty.length ? s.byProperty.map(function (p) {
           return varRow(p.name, p.count + (state.user.role !== 'admin' ? ' open' : ''));
@@ -1461,6 +1477,8 @@
   window.PropCareApp = {
     route: route,
     closeModal: closeModal,
+    // Exposed so the formatting helpers can be unit-tested directly.
+    initials: initials,
     init: function () {
       wireLogin();
       wireGlobal();
