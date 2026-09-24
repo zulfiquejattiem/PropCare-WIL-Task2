@@ -36,17 +36,26 @@ class EventBus {
     }
     const key = String(event);
     if (!this.listeners.has(key)) this.listeners.set(key, []);
-    const entry = { name: observer.name || 'anonymous', handler: observer.handle.bind(observer) };
+    // `observer` is kept on the entry so unsubscribe can match by *identity*.
+    // Matching on `name` alone would remove every observer that happens to
+    // share a display name.
+    const entry = {
+      name: observer.name || 'anonymous',
+      observer,
+      handler: observer.handle.bind(observer),
+    };
     this.listeners.get(key).push(entry);
     return () => this.unsubscribe(event, observer);
   }
 
   unsubscribe(event, observer) {
-    const list = this.listeners.get(String(event));
+    const key = String(event);
+    const list = this.listeners.get(key);
     if (!list) return;
-    const next = list.filter((entry) => entry.name !== (observer.name || 'anonymous'));
-    if (next.length) this.listeners.set(String(event), next);
-    else this.listeners.delete(String(event));
+    // Remove only this exact observer instance.
+    const next = list.filter((entry) => entry.observer !== observer);
+    if (next.length) this.listeners.set(key, next);
+    else this.listeners.delete(key);
   }
 
   /** Number of observers for an event - used by the unit tests. */

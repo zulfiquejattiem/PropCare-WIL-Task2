@@ -13,11 +13,22 @@ const BASE =
 const SHOTS = path.join(__dirname, '..', 'browser-shots');
 const SHOTS_ONLY = process.argv.indexOf('--shots-only') !== -1;
 
+// Optional path to a Chrome/Chromium binary. Leave unset to let Puppeteer use
+// the browser it downloaded during `npm ci`.
+const CHROME = process.env.PPC_CHROME || process.env.CHROME_PATH || '';
+
 const PASS = 'PASS', FAIL = 'FAIL', INFO = 'INFO';
 const results = [];
 let errors = [];
 
 function record(step, status, note) {
+  // `--shots-only` renders every screen without asserting: a failed check is
+  // reported as informational and never counted, so the run cannot fail on it.
+  if (SHOTS_ONLY && status === FAIL) {
+    results.push({ step, status: INFO, note });
+    console.log('  \u2022 ' + step + (note ? '  [' + note + ']' : ''));
+    return;
+  }
   results.push({ step, status, note });
   console.log((status === PASS ? '  \u2713' : status === FAIL ? '  \u2717' : '  \u2022') + ' ' + step + (note ? '  [' + note + ']' : ''));
 }
@@ -38,6 +49,25 @@ const PASSWORD = 'PropCare123!';
 
 function errFile(kind, roleOrName) {
   return path.join(SHOTS, 'errors', `${kind}-${roleOrName}.png`);
+}
+
+/**
+ * Save a diagnostic screenshot for a failed step.
+ *
+ * A browser failure without the page it happened on is close to undebuggable,
+ * so every caught failure captures the state it died in. Never throws: losing
+ * the screenshot must not mask the original error.
+ */
+async function captureError(page, kind, roleOrName) {
+  if (!page) return null;
+  const file = errFile(kind, roleOrName);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    await page.screenshot({ path: file, fullPage: true });
+    return file;
+  } catch (e) {
+    return null;
+  }
 }
 
 async function healthCheck() {
@@ -71,7 +101,9 @@ async function login(page, role) {
       banner: (document.querySelector('#appBody .error-banner') || {}).textContent || '',
       hash: location.hash,
     }));
-    throw new Error('login failed as ' + role + ' -> ' + JSON.stringify(diag));
+    const shot = await captureError(page, 'login', role);
+    throw new Error('login failed as ' + role + ' -> ' + JSON.stringify(diag) +
+      (shot ? ' (screenshot: ' + path.relative(process.cwd(), shot) + ')' : ''));
   }
   await page.waitForFunction(() => document.querySelectorAll('.hero').length > 0, { timeout: 10000 });
   const name = await page.evaluate(() => document.getElementById('userName').textContent);
@@ -212,7 +244,9 @@ async function managerAssign(page, ctxErrors, id) {
       toast: document.getElementById('toast').textContent,
       statusText: document.body.textContent.slice(0, 260)
     }), id);
-    record('manager assign', FAIL, 'toast="' + info.toast + '"');
+    const failureShot = await captureError(page, 'manager-assign', id);
+    record('manager assign', FAIL, 'toast="' + info.toast + '"' +
+      (failureShot ? ' (screenshot: ' + path.relative(process.cwd(), failureShot) + ')' : ''));
     return false;
   }
   await page.waitForFunction(() => {

@@ -8,7 +8,7 @@
 |---|---|
 | App + API (Render) | `https://propcare-wil-task2.onrender.com` |
 | API health | `https://propcare-wil-task2.onrender.com/api/health` |
-| Prototype (Task 1, GitHub Pages) | `https://zulfique.github.io/PropCare-WIL-Task2/prototype/` |
+| Prototype (Task 1, GitHub Pages) | `https://zulfiquejattiem.github.io/PropCare-WIL-Task2/prototype/` |
 | Repository | `https://github.com/zulfiquejattiem/PropCare-WIL-Task2` |
 
 **Demo accounts** — every account uses the password in `DEMO_PASSWORD` (local default shown in `.env.example`, configured separately in Render):
@@ -227,8 +227,8 @@ Current history (example — your merge commits will reflect the session):
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push `main, develop`, PR `main` | `npm ci` → syntax check (`server.js` + `src/**/*.js` + `public/js/*.js`) → `npm audit --omit=dev --audit-level=high` → `npm test` (124 tests: 86 integration via Supertest, 38 unit) → `html-validate` on `prototype/*.html` + `public/index.html` |
-| `.github/workflows/build.yml` | push `main, develop`, PR `main` | validates prototype HTML/JS + README, publishes Task 1 `prototype/` to GitHub Pages |
+| `.github/workflows/ci.yml` | push `main, develop`, PR `main`, manual `workflow_dispatch` | `npm ci` → syntax check (`server.js` + `scripts/*.js` + every `.js` under `src/` + `public/js/*.js`) → `npm audit --omit=dev --audit-level=high` → `npm test` (151 tests: 95 integration via Supertest, 56 unit) → `html-validate` on `prototype/*.html` + `public/index.html` |
+| `.github/workflows/build.yml` | push `main, develop`, PR `main`, manual `workflow_dispatch` | validates prototype HTML/JS + README, publishes Task 1 `prototype/` to GitHub Pages |
 | `.github/workflows/deploy.yml` | push `main`, manual `workflow_dispatch` | `npm ci` → `npm test` → `npm run check` → triggers Render deploy hook (`RENDER_DEPLOY_HOOK_URL` secret) → polls `https://propcare-wil-task2.onrender.com/api/health` up to 30×10 s |
 
 Top band: unit + integration tests + hands-off deploy. A push to `main` requires no manual step — if tests fail, the deploy is never triggered.

@@ -27,6 +27,11 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        env:
+          # This pipeline runs `npm test` and `npm run check`, neither of which
+          # needs a browser. Only the separate `npm run test:browser` script
+          # does, and it is not part of the deploy gate.
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
         run: npm ci
 
       - name: Run automated tests

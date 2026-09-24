@@ -114,12 +114,13 @@ const listRequestsValidation = [
   query('status')
     .optional()
     .trim()
-    .isIn(['submitted', 'under-review', 'assigned', 'in-progress', 'on-hold', 'completed', 'closed', 'cancelled', 'rejected'])
+    // 'all' is the explicit "no filter" sentinel that the route handler honours.
+    .isIn(['all', 'submitted', 'under-review', 'assigned', 'in-progress', 'on-hold', 'completed', 'closed', 'cancelled', 'rejected'])
     .withMessage('Invalid status filter'),
   query('category')
     .optional()
     .trim()
-    .isIn(CATEGORY_IDS)
+    .isIn(['all'].concat(CATEGORY_IDS))
     .withMessage('Invalid category filter'),
   query('q')
     .optional()

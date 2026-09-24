@@ -30,8 +30,11 @@ function buildSummary(user) {
     .sort((a, b) => b.count - a.count);
 
   const scope = actor.role === 'manager' ? { managerId: actor.id } : {};
-  const byProperty = repositories.properties
-    .requestCounts({ ...scope, openOnly: true })
+  // One query. Managers reuse these same rows for `portfolio`, so the summary
+  // endpoint no longer issues two identical queries per request.
+  const propertyRows = repositories.properties.requestCounts({ ...scope, openOnly: true });
+
+  const byProperty = propertyRows
     .filter((p) => p.n > 0)
     .map((p) => ({ id: p.id, name: p.name, count: p.n }))
     .sort((a, b) => b.count - a.count);
@@ -43,6 +46,7 @@ function buildSummary(user) {
     byCategory,
     byStatus,
     byProperty,
+    _propertyRows: propertyRows,
   };
 }
 
@@ -54,6 +58,7 @@ router.get('/summary', (req, res, next) => {
   try {
     if (req.user.role === 'admin') {
       const summary = buildSummary(req.user);
+      delete summary._propertyRows;
 
       summary.users = {
         tenants: repositories.users.countByRole('tenant'),
@@ -69,12 +74,14 @@ router.get('/summary', (req, res, next) => {
 
     if (req.user.role === 'manager') {
       const summary = buildSummary(req.user);
+      const propertyRows = summary._propertyRows;
+      delete summary._propertyRows;
 
       // `properties` is a scalar on the admin payload, so the per-property
       // breakdown for managers lives under its own, clearly named key.
-      summary.portfolio = repositories.properties
-        .requestCounts({ managerId: req.user.id, openOnly: true })
-        .map((p) => ({ id: p.id, name: p.name, count: p.n }));
+      // Unlike `byProperty` this keeps zero-count properties, so a manager sees
+      // their whole portfolio including buildings with nothing open.
+      summary.portfolio = propertyRows.map((p) => ({ id: p.id, name: p.name, count: p.n }));
 
       return res.status(200).json({ status: 'success', data: { summary } });
     }

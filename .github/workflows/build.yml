@@ -5,6 +5,8 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  # Lets the build and Pages publish be run on demand from the Actions tab.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -48,7 +50,11 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}prototype/
+      # Must be a literal: `jobs.<id>.environment.url` is resolved before the job
+      # starts, so the `steps` context is not available here and a
+      # `${{ steps.deployment.outputs.page_url }}` reference always rendered
+      # empty. Update this if the repository or its owner is renamed.
+      url: https://zulfiquejattiem.github.io/PropCare-WIL-Task2/prototype/
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,5 +69,5 @@ jobs:
         uses: actions/deploy-pages@v4
       - name: Deployment Complete
         run: |
-          echo "✅ Deploy complete!"
-          echo "🚀 Live at: https://zulfique.github.io/PropCare-WIL-Task2/prototype/"
+          echo "Deploy complete!"
+          echo "Live at: ${{ steps.deployment.outputs.page_url }}prototype/"
