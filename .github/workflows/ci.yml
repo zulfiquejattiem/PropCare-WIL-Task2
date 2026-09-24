@@ -5,6 +5,9 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  # Lets the pipeline be run on demand from the Actions tab instead of only on
+  # a push to a triggering branch.
+  workflow_dispatch:
 
 jobs:
   test:
@@ -23,17 +26,35 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        env:
+          # The Jest suite runs in a Node environment and needs no browser -
+          # only the separate `npm run test:browser` script does. Skipping the
+          # Chromium download keeps CI fast; it does not change what is tested.
+          PUPPETEER_SKIP_DOWNLOAD: 'true'
         run: npm ci
 
       - name: Syntax-check server and source files
         run: |
-          for f in server.js scripts/*.js src/**/*.js src/*.js; do
+          shopt -s globstar nullglob
+          files=(server.js scripts/*.js src/**/*.js src/*.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No source files matched - the syntax check glob is broken."
+            exit 1
+          fi
+          echo "Syntax-checking ${#files[@]} files"
+          for f in "${files[@]}"; do
             node --check "$f" || exit 1
           done
 
       - name: Syntax-check front-end files
         run: |
-          for f in public/js/*.js; do
+          shopt -s nullglob
+          files=(public/js/*.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No front-end files matched - the syntax check glob is broken."
+            exit 1
+          fi
+          for f in "${files[@]}"; do
             node --check "$f" || exit 1
           done
 
